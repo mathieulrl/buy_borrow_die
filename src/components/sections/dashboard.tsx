@@ -1,0 +1,1880 @@
+"use client";
+
+import { motion, useInView } from "framer-motion";
+import { useRef, useState, useEffect } from "react";
+import { Loader2 } from "lucide-react";
+import { CardContent, CardHeader, CardTitle, GlassCard, StatsCard } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Slider } from "@/components/ui/slider";
+import { HealthFactorGauge } from "@/components/ui/progress";
+import { useAccount, useBalance, useChainId, useSendTransaction, useReadContracts, useEnsName, useEnsAvatar } from "wagmi";
+import { formatUnits, parseUnits } from "viem";
+import {
+  Wallet as WalletIcon,
+  TrendingUp,
+  ArrowDownUp,
+  Landmark,
+  DollarSign,
+  Coins,
+  Clock,
+  AlertTriangle,
+  CheckCircle2,
+  Info,
+  Settings,
+  RefreshCw,
+  ArrowUpRight,
+  BarChart3,
+  Shield,
+  ExternalLink,
+  Copy,
+  Check,
+} from "lucide-react";
+import { cn, formatCurrency, formatNumber, calculateHealthFactor, shortenAddress } from "@/lib/utils";
+import { useUserAccountData, useUserReserveData, useApprove, useSupply, useBorrow, useRepay, useAllowance } from "@/hooks/useAave";
+import { usePrices } from "@/hooks/usePrices";
+import { useLifi, type LifiRoute } from "@/hooks/useLifi";
+import { useArc } from "@/hooks/useArc";
+import { getContracts } from "@/lib/contracts";
+import { useAppStore } from "@/lib/store";
+import { arbitrumSepolia } from "wagmi/chains";
+
+// cryptoAssets is now defined inside DashboardSection component based on network
+
+const dcaFrequencies = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "biweekly", label: "Bi-Weekly" },
+  { value: "monthly", label: "Monthly" },
+];
+
+// Shared Asset Allocation Component
+interface AssetAllocationProps {
+  allocations: number[];
+  onAllocationsChange: (allocations: number[]) => void;
+  prices: { BTC: number; ETH: number };
+  editable?: boolean;
+  depositAmount?: string;
+  cryptoAssets: Array<{ symbol: string; name: string; icon: string; color: string; allocation: number; apy: number }>;
+}
+
+function AssetAllocation({ 
+  allocations, 
+  onAllocationsChange, 
+  prices, 
+  editable = true,
+  depositAmount,
+  cryptoAssets
+}: AssetAllocationProps) {
+  const total = allocations.reduce((a, b) => a + b, 0);
+  const isValid = total === 100;
+
+  return (
+    <div className="space-y-4">
+      <label className="text-sm font-medium">
+        Asset Allocation
+      </label>
+      {cryptoAssets.map((asset, index) => {
+        const allocation = allocations[index];
+        const amount = depositAmount ? (parseFloat(depositAmount) * allocation) / 100 : 0;
+        const price = prices[asset.symbol as keyof typeof prices] || 1;
+        const cryptoAmount = amount / price;
+
+        return (
+          <div key={asset.symbol} className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold"
+                  style={{ backgroundColor: `${asset.color}20`, color: asset.color }}
+                >
+                  {asset.icon}
+                </div>
+                <span className="font-medium">{asset.symbol}</span>
+                {editable && (
+                  <span className="text-xs text-muted-foreground">
+                    ${formatNumber(price)}
+                  </span>
+                )}
+              </div>
+              <div className="text-right">
+                <span className="font-medium">{allocation}%</span>
+                {depositAmount && amount > 0 && (
+                  <>
+                    <div className="font-medium text-xs mt-0.5">
+                      {cryptoAmount.toFixed(6)} {asset.symbol}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      ≈ ${amount.toFixed(2)}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            {editable ? (
+              <Slider
+                value={[allocation]}
+                max={100}
+                step={5}
+                onValueChange={(value) => {
+                  const newAllocations = [...allocations];
+                  const newValue = value[0];
+                  const oldValue = allocations[index];
+                  const difference = newValue - oldValue;
+                  
+                  // Calculate the total of other allocations (excluding current index)
+                  const otherTotal = allocations.reduce((sum, val, idx) => {
+                    return idx === index ? sum : sum + val;
+                  }, 0);
+                  
+                  // If there are other sliders, adjust them proportionally
+                  if (allocations.length > 1) {
+                    // Calculate how much we need to adjust the others
+                    const remaining = 100 - newValue;
+                    
+                    // Distribute the remaining percentage proportionally among other sliders
+                    if (otherTotal > 0 && remaining >= 0) {
+                      allocations.forEach((val, idx) => {
+                        if (idx !== index) {
+                          // Calculate proportional adjustment
+                          const proportion = val / otherTotal;
+                          newAllocations[idx] = Math.max(0, Math.min(100, remaining * proportion));
+                        }
+                      });
+                    } else if (remaining < 0) {
+                      // If new value exceeds 100%, cap it at 100% and set others to 0
+                      newAllocations[index] = 100;
+                      allocations.forEach((val, idx) => {
+                        if (idx !== index) {
+                          newAllocations[idx] = 0;
+                        }
+                      });
+                    }
+                  }
+                  
+                  // Set the current slider value
+                  newAllocations[index] = Math.max(0, Math.min(100, newValue));
+                  
+                  // Ensure total is exactly 100% by adjusting the last slider if needed
+                  const finalTotal = newAllocations.reduce((sum, val) => sum + val, 0);
+                  if (finalTotal !== 100 && allocations.length > 1) {
+                    const adjustment = 100 - finalTotal;
+                    // Find the last non-current slider and adjust it
+                    for (let i = allocations.length - 1; i >= 0; i--) {
+                      if (i !== index) {
+                        newAllocations[i] = Math.max(0, Math.min(100, newAllocations[i] + adjustment));
+                        break;
+                      }
+                    }
+                  }
+                  
+                  onAllocationsChange(newAllocations);
+                }}
+                className="[&_[role=slider]]:bg-white"
+              />
+            ) : (
+              <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${allocation}%`,
+                    backgroundColor: asset.color,
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {editable && (
+        <div className={cn(
+          "flex items-center gap-2 text-sm p-2 rounded-lg",
+          isValid
+            ? "bg-green-500/10 text-green-400" 
+            : "bg-yellow-500/10 text-yellow-400"
+        )}>
+          {isValid ? (
+            <CheckCircle2 className="w-4 h-4" />
+          ) : (
+            <Info className="w-4 h-4" />
+          )}
+          Total: {total}%
+          {!isValid && " (should equal 100%)"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Cross-Chain Deposit Form Component
+function CrossChainDepositForm() {
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  const { getBestRoute, executeRoute, getTargetChain, isLoading: lifiLoading, error: lifiError } = useLifi();
+  const { addTransaction, updateTransactionStatus } = useAppStore();
+  const [fromChain, setFromChain] = useState<number>(5042002); // Arc Testnet by default
+  const [fromToken, setFromToken] = useState<"USDC" | "WBTC" | "WETH">("USDC");
+  const [amount, setAmount] = useState("");
+  const [selectedRoute, setSelectedRoute] = useState<LifiRoute | null>(null);
+  const [isExecuting, setIsExecuting] = useState(false);
+
+  // Common chain IDs supported by LI.FI (testnet only)
+  const supportedChains = [
+    { id: 5042002, name: "Arc Testnet" }, // Source chain
+    { id: 11155111, name: "Ethereum Sepolia" },
+    { id: 80002, name: "Polygon Amoy" },
+    { id: 11155420, name: "Optimism Sepolia" },
+    { id: 421614, name: "Arbitrum Sepolia" }, // Destination chain
+  ];
+
+  // Token addresses on different chains (simplified - would need full mapping in production)
+  const getTokenAddress = (chainId: number, token: "USDC" | "WBTC" | "WETH"): `0x${string}` => {
+    // Token addresses for testnet chains
+    if (token === "USDC") {
+      if (chainId === 5042002) return "0x0000000000000000000000000000000000000000" as `0x${string}`; // Arc Testnet native USDC (may need actual address)
+      if (chainId === 11155111) return "0x1c7D4B196Cb0C7B01d743Fbc6116a902391C10ad" as `0x${string}`; // Ethereum Sepolia
+      if (chainId === 80002) return "0x41e94eb019c0762f9bfcf918217d59ca54642f57" as `0x${string}`; // Polygon Amoy
+      if (chainId === 11155420) return "0x5fd84259d66Cd46123540766Be93DFE6D43130D7" as `0x${string}`; // Optimism Sepolia
+      if (chainId === 421614) return "0x75faf114eafb1BDbe2F0316DF893fd58cE30AF7E" as `0x${string}`; // Arbitrum Sepolia
+    }
+    if (token === "WBTC") {
+      if (chainId === 11155111) return "0x29f2D40B0605204364c54D4cEE5132adD012B9C2" as `0x${string}`; // Ethereum Sepolia
+      if (chainId === 421614) return "0x29f2D40B0605204364c54D4cEE5132adD012B9C2" as `0x${string}`; // Arbitrum Sepolia
+    }
+    if (token === "WETH") {
+      if (chainId === 11155111) return "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14" as `0x${string}`; // Ethereum Sepolia
+      if (chainId === 11155420) return "0x4200000000000000000000000000000000000006" as `0x${string}`; // Optimism Sepolia
+      if (chainId === 421614) return "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73" as `0x${string}`; // Arbitrum Sepolia
+    }
+    // Fallback
+    return "0x0000000000000000000000000000000000000000" as `0x${string}`;
+  };
+
+  const targetChain = getTargetChain();
+  const targetContracts = getContracts(targetChain);
+  
+  const getTargetTokenAddress = (token: "USDC" | "WBTC" | "WETH"): `0x${string}` => {
+    if (token === "USDC") return targetContracts.USDC as `0x${string}`;
+    // WBTC/WETH only available on Arbitrum Sepolia (destination chain)
+    if (targetChain === arbitrumSepolia.id) {
+      if (token === "WBTC" && "WBTC" in targetContracts) return targetContracts.WBTC as `0x${string}`;
+      if (token === "WETH" && "WETH" in targetContracts) return targetContracts.WETH as `0x${string}`;
+    }
+    return targetContracts.USDC as `0x${string}`;
+  };
+
+  const handleGetRoute = async () => {
+    if (!amount || parseFloat(amount) <= 0) {
+      alert("Please enter a valid amount");
+      return;
+    }
+
+    if (!isConnected) {
+      alert("Please connect your wallet first");
+      return;
+    }
+
+    try {
+      const fromTokenAddress = getTokenAddress(fromChain, fromToken);
+      const toTokenAddress = getTargetTokenAddress(fromToken);
+      
+      // Convert amount to wei (USDC uses 6 decimals, WBTC 8, WETH 18)
+      const decimals = fromToken === "USDC" ? 6 : fromToken === "WBTC" ? 8 : 18;
+      const amountWei = parseUnits(amount, decimals).toString();
+
+      const route = await getBestRoute({
+        fromChain,
+        fromToken: fromTokenAddress,
+        fromAmount: amountWei,
+        toChain: targetChain,
+        toToken: toTokenAddress,
+      });
+
+      if (route) {
+        setSelectedRoute(route);
+      } else {
+        alert("No route found. Please try a different amount or chain.");
+      }
+    } catch (err: any) {
+      console.error("Error getting route:", err);
+      alert(`Error: ${err.message}`);
+    }
+  };
+
+  const handleExecuteRoute = async () => {
+    if (!selectedRoute) {
+      alert("Please get a route first");
+      return;
+    }
+
+    if (!address) {
+      alert("Please connect your wallet first");
+      return;
+    }
+
+    setIsExecuting(true);
+    try {
+      const txId = `bridge-${Date.now()}`;
+      addTransaction({
+        id: txId,
+        type: "bridge",
+        amount: parseFloat(amount),
+        asset: fromToken,
+        timestamp: new Date(),
+        status: "pending",
+        sourceChain: fromChain,
+        destChain: targetChain,
+      });
+
+      const result = await executeRoute(selectedRoute);
+      
+      if (result.success && result.transactionHashes.length > 0) {
+        updateTransactionStatus(txId, "confirmed", result.transactionHashes[0]);
+        alert(`✅ Bridge successful! Transaction: ${result.transactionHashes[0]}`);
+        setSelectedRoute(null);
+        setAmount("");
+      }
+    } catch (err: any) {
+      console.error("Error executing route:", err);
+      alert(`Error: ${err.message}`);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  if (!isConnected) {
+    return (
+      <div className="text-center py-8">
+        <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-4">
+          <WalletIcon className="w-8 h-8 text-muted-foreground" />
+        </div>
+        <h4 className="font-display font-semibold mb-2">Connect Wallet</h4>
+        <p className="text-sm text-muted-foreground mb-4">
+          Connect your wallet to bridge assets from any chain to Arbitrum
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* From Chain Selection */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">From Chain</label>
+        <select
+          value={fromChain}
+          onChange={(e) => {
+            setFromChain(Number(e.target.value));
+            setSelectedRoute(null);
+          }}
+          className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm focus:outline-none focus:ring-2 focus:ring-bitcoin"
+        >
+          {supportedChains.map((chain) => (
+            <option key={chain.id} value={chain.id}>
+              {chain.name} {chain.id === targetChain ? "(Target)" : chain.id === 5042002 ? "(Recommended)" : ""}
+            </option>
+          ))}
+        </select>
+        {fromChain === 5042002 && (
+          <p className="text-xs text-bitcoin">
+            ✓ Arc Testnet is the recommended starting point for this hackathon
+          </p>
+        )}
+      </div>
+
+      {/* Token Selection */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">Token</label>
+        <div className="grid grid-cols-3 gap-2">
+          {(["USDC", "WBTC", "WETH"] as const).map((token) => (
+            <button
+              key={token}
+              onClick={() => {
+                setFromToken(token);
+                setSelectedRoute(null);
+              }}
+              className={cn(
+                "px-3 py-2 rounded-lg text-sm font-medium transition-all",
+                fromToken === token
+                  ? "bg-bitcoin text-white"
+                  : "bg-white/5 hover:bg-white/10"
+              )}
+            >
+              {token}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Amount Input */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">Amount</label>
+        <div className="relative">
+          <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            type="number"
+            value={amount}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              setSelectedRoute(null);
+            }}
+            className="pl-9"
+            placeholder="0.00"
+          />
+        </div>
+      </div>
+
+      {/* Route Info */}
+      {selectedRoute && (
+        <div className="p-4 rounded-xl bg-white/5 border border-white/10 space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">You will receive</span>
+            <span className="font-medium">
+              {formatNumber(Number(formatUnits(BigInt(selectedRoute.toAmount), selectedRoute.toToken.decimals)))} {selectedRoute.toToken.symbol}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Estimated gas cost</span>
+            <span className="font-medium">
+              ${selectedRoute.gasCosts.reduce((sum, cost) => sum + parseFloat(cost.amountUSD || "0"), 0).toFixed(2)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Steps</span>
+            <span className="font-medium">{selectedRoute.steps.length} step(s)</span>
+          </div>
+        </div>
+      )}
+
+      {/* Error Display */}
+      {lifiError && (
+        <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-400">
+          {lifiError}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-3">
+        <Button
+          variant="outline"
+          className="flex-1"
+          onClick={handleGetRoute}
+          disabled={!amount || parseFloat(amount) <= 0 || lifiLoading || fromChain === targetChain}
+        >
+          {lifiLoading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Finding route...
+            </>
+          ) : (
+            <>
+              <ArrowDownUp className="w-4 h-4" />
+              Get Route
+            </>
+          )}
+        </Button>
+        <Button
+          variant="gradient"
+          className="flex-1"
+          onClick={handleExecuteRoute}
+          disabled={!selectedRoute || isExecuting || lifiLoading}
+        >
+          {isExecuting ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Bridging...
+            </>
+          ) : (
+            <>
+              <ArrowDownUp className="w-4 h-4" />
+              Execute Bridge
+            </>
+          )}
+        </Button>
+      </div>
+
+      {fromChain === targetChain && (
+        <p className="text-xs text-center text-yellow-400">
+          You're already on the target chain. Switch to a different chain to bridge.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Arc Credit Line Card Component
+function ArcCreditLineCard() {
+  const { address } = useAccount();
+  const { creditLine, agentDecision, isLoading: arcLoading, error: arcError } = useArc();
+  const { data: aaveData } = useUserAccountData();
+
+  if (!address) {
+    return null;
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2 }}
+      className="mb-8"
+    >
+      <GlassCard className="p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center">
+              <Landmark className="w-5 h-5 text-purple-400" />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-lg">Arc Credit Line</h3>
+              <p className="text-xs text-muted-foreground">USDC credit managed by Arc agent</p>
+            </div>
+          </div>
+          {creditLine && (
+            <div className="text-right">
+              <div className="text-sm text-muted-foreground">Status</div>
+              <div className={`text-sm font-medium ${
+                creditLine.status === "active" ? "text-green-400" :
+                creditLine.status === "frozen" ? "text-red-400" :
+                "text-muted-foreground"
+              }`}>
+                {creditLine.status.toUpperCase()}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {arcLoading && (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+          </div>
+        )}
+
+        {arcError && (
+          <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400">
+            {arcError}
+          </div>
+        )}
+
+        {!arcLoading && !arcError && !creditLine && (
+          <div className="text-center py-8">
+            <div className="w-16 h-16 rounded-2xl bg-purple-500/10 flex items-center justify-center mx-auto mb-4">
+              <Landmark className="w-8 h-8 text-purple-400" />
+            </div>
+            <h4 className="font-display font-semibold mb-2">No Credit Line Yet</h4>
+            <p className="text-sm text-muted-foreground mb-4">
+              Create a USDC credit line managed by Arc agent. The agent will monitor your Aave position and adjust credit limits automatically.
+            </p>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                // Create credit line with initial limit based on Aave collateral
+                if (aaveData && aaveData.totalCollateralUSD > 0) {
+                  const initialLimit = BigInt(Math.floor(aaveData.totalCollateralUSD * 0.5 * 1_000_000)); // 50% of collateral in USDC (6 decimals)
+                  // This would call useArc().createCreditLine() - implementation needed
+                  alert("Credit line creation will be implemented with Arc API integration");
+                } else {
+                  alert("Deposit collateral on Aave first to create a credit line");
+                }
+              }}
+            >
+              Create Credit Line
+            </Button>
+          </div>
+        )}
+
+        {creditLine && (
+          <div className="space-y-4">
+            {/* Credit Line Stats */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="p-3 rounded-xl bg-white/5">
+                <div className="text-xs text-muted-foreground mb-1">Credit Limit</div>
+                <div className="font-display font-bold">
+                  {formatCurrency(Number(formatUnits(creditLine.creditLimit, 6)))}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-white/5">
+                <div className="text-xs text-muted-foreground mb-1">Used</div>
+                <div className="font-display font-bold">
+                  {formatCurrency(Number(formatUnits(creditLine.creditUsed, 6)))}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-white/5">
+                <div className="text-xs text-muted-foreground mb-1">Available</div>
+                <div className="font-display font-bold text-green-400">
+                  {formatCurrency(Number(formatUnits(creditLine.availableCredit, 6)))}
+                </div>
+              </div>
+            </div>
+
+            {/* Agent Decision */}
+            {agentDecision && (
+              <div className={`p-4 rounded-xl border ${
+                agentDecision.riskLevel === "low" ? "bg-green-500/10 border-green-500/20" :
+                agentDecision.riskLevel === "medium" ? "bg-yellow-500/10 border-yellow-500/20" :
+                "bg-red-500/10 border-red-500/20"
+              }`}>
+                <div className="flex items-start gap-3">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                    agentDecision.riskLevel === "low" ? "bg-green-500/20" :
+                    agentDecision.riskLevel === "medium" ? "bg-yellow-500/20" :
+                    "bg-red-500/20"
+                  }`}>
+                    {agentDecision.action === "freeze" ? (
+                      <AlertTriangle className={`w-4 h-4 ${
+                        agentDecision.riskLevel === "high" ? "text-red-400" : "text-yellow-400"
+                      }`} />
+                    ) : agentDecision.action === "increase" ? (
+                      <TrendingUp className="w-4 h-4 text-green-400" />
+                    ) : agentDecision.action === "decrease" ? (
+                      <TrendingUp className="w-4 h-4 rotate-180 text-yellow-400" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 text-green-400" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-medium text-sm">
+                        Agent Decision: {agentDecision.action.toUpperCase()}
+                      </span>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        agentDecision.riskLevel === "low" ? "bg-green-500/20 text-green-400" :
+                        agentDecision.riskLevel === "medium" ? "bg-yellow-500/20 text-yellow-400" :
+                        "bg-red-500/20 text-red-400"
+                      }`}>
+                        {agentDecision.riskLevel.toUpperCase()} RISK
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mb-2">{agentDecision.reason}</p>
+                    <div className="text-xs text-muted-foreground">
+                      Suggested LTV: <span className="font-medium">{agentDecision.suggestedLTV}%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Credit Line Details */}
+            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-white/10">
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Interest Rate</div>
+                <div className="font-medium">{creditLine.interestRate.toFixed(2)}% APY</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Current LTV</div>
+                <div className="font-medium">{creditLine.ltv.toFixed(1)}%</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+export function DashboardSection() {
+  const ref = useRef(null);
+  const isInView = useInView(ref, { once: true, margin: "-100px" });
+  const [mounted, setMounted] = useState(false);
+  const { isConnected, address } = useAccount();
+  const chainId = useChainId();
+  const { getPrice } = usePrices();
+  // Testnet only - no mainnet check needed
+  
+  // ENS resolution
+  const { data: ensName } = useEnsName({ address: address || undefined });
+  const { data: ensAvatar } = useEnsAvatar({ name: ensName || undefined });
+  
+  // Prevent hydration mismatch
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  
+  // Update crypto assets based on network
+  const cryptoAssets = [
+    { 
+      symbol: "BTC", 
+      name: "Wrapped Bitcoin (WBTC)", 
+      icon: "₿",
+      color: "#F7931A",
+      allocation: 50,
+      apy: 0.5,
+    },
+    { 
+      symbol: "ETH", 
+      name: "Wrapped Ether (WETH)", 
+      icon: "Ξ",
+      color: "#627EEA",
+      allocation: 50,
+      apy: 2.1,
+    },
+  ];
+  
+  // Get contracts for current chain (default to arbitrumSepolia for SSR)
+  const contracts = getContracts(mounted ? chainId : 421614); // Arbitrum Sepolia is destination
+  
+  // AAVE data
+  const { data: aaveData, isLoading: aaveLoading, refetch: refetchAaveAccount } = useUserAccountData();
+  
+  // USDC Balance
+  const { data: usdcBalance } = useBalance({
+    address: address,
+    token: contracts.USDC,
+  });
+  const { sendTransactionAsync, isPending: isSendingTx } = useSendTransaction();
+  const { approve, isPending: isApprovePending, isConfirming: isApproveConfirming, isSuccess: isApproveSuccess, hash: approveHash } = useApprove();
+  const { supply } = useSupply();
+  const { borrow, isPending: isBorrowPending, isConfirming: isBorrowConfirming } = useBorrow();
+  const { repay, isPending: isRepayPending, isConfirming: isRepayConfirming } = useRepay();
+  
+  // Local state
+  const [depositAmount, setDepositAmount] = useState("");
+  const [borrowAmount, setBorrowAmount] = useState("");
+  const [dcaAmount, setDcaAmount] = useState("500");
+  const [dcaFrequency, setDcaFrequency] = useState("weekly");
+  const [ltv, setLtv] = useState([50]);
+  const [dcaAllocations, setDcaAllocations] = useState([50, 50]);
+  const [quickDepositAllocations, setQuickDepositAllocations] = useState([50, 50]);
+  const [copied, setCopied] = useState(false);
+  const [isDCAActive, setIsDCAActive] = useState(false);
+  const [isSwapping, setIsSwapping] = useState(false);
+  const [activeTab, setActiveTab] = useState<"buy" | "borrow" | "portfolio">("buy");
+  const [waitingForApproveConfirmation, setWaitingForApproveConfirmation] = useState(false);
+  const [isRepaying, setIsRepaying] = useState(false);
+
+  // Read WBTC and WETH balances for deposit step (uses current chain)
+  // Only available on Arbitrum Sepolia, not on Arc Testnet
+  const tokenAddressesForBalances = [
+    "WBTC" in contracts ? contracts.WBTC : null,
+    "WETH" in contracts ? contracts.WETH : null,
+  ].filter(Boolean) as `0x${string}`[];
+
+  const { data: tokenBalances } = useReadContracts({
+    contracts: tokenAddressesForBalances.map((addr) => ({
+      address: addr,
+      abi: [
+        {
+          name: "balanceOf",
+          type: "function",
+          stateMutability: "view",
+          inputs: [{ name: "account", type: "address" }],
+          outputs: [{ name: "balance", type: "uint256" }],
+        },
+      ] as const,
+      functionName: "balanceOf",
+      args: [address || "0x0000000000000000000000000000000000000000"],
+    })),
+    query: {
+      enabled: !!address,
+    },
+  });
+
+  // Aave USDC variable debt
+  const { data: usdcReserveData } = useUserReserveData(contracts.USDC as `0x${string}`);
+  const usdcVariableDebt: bigint =
+    usdcReserveData && Array.isArray(usdcReserveData) && usdcReserveData.length > 2
+      ? (usdcReserveData[2] as bigint)
+      : BigInt(0);
+
+  // USDC allowance for Aave Pool (2-step approve → repay flow)
+  const { allowance: usdcAllowanceRaw, refetch: refetchAllowance } = useAllowance(contracts.USDC as `0x${string}`);
+  const usdcAllowance = (usdcAllowanceRaw ?? BigInt(0)) as bigint;
+
+  // Refetch allowance when approve is confirmed
+  useEffect(() => {
+    if (isApproveSuccess && approveHash) {
+      const timer = setTimeout(() => {
+        refetchAllowance();
+        setWaitingForApproveConfirmation(false);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [isApproveSuccess, approveHash, refetchAllowance]);
+
+  // Get prices
+  const btcPrice = getPrice("BTC") || 67500;
+  const ethPrice = getPrice("ETH") || 3450;
+  const prices = { BTC: btcPrice, ETH: ethPrice };
+
+  // Calculate values from AAVE data or use mock
+  const totalDeposited = aaveData?.totalCollateralUSD || 0;
+  const totalBorrowed = aaveData?.totalDebtUSD || 0;
+  const availableToBorrow = aaveData?.availableBorrowsUSD || 0;
+  const healthFactor = aaveData?.healthFactor || (totalBorrowed > 0 ? calculateHealthFactor(totalDeposited, totalBorrowed) : Infinity);
+  const portfolioValue = totalDeposited + (Number(usdcBalance?.formatted || 0));
+
+  // Copy address to clipboard
+  const copyAddress = () => {
+    if (address) {
+      navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  // Format USDC balance
+  const usdcBalanceFormatted = usdcBalance ? Number(usdcBalance.formatted).toFixed(2) : "0.00";
+
+  // Calculate repay amount: min of debt and wallet balance
+  const getRepayAmountWei = () => {
+    if (usdcVariableDebt <= BigInt(0)) return BigInt(0);
+    
+    const walletUsdc = usdcBalance ? Number(usdcBalance.formatted) : 0;
+    const walletUsdcWei = walletUsdc > 0 ? BigInt(Math.floor(walletUsdc * 1_000_000)) : BigInt(0);
+
+    if (walletUsdcWei <= BigInt(0)) return BigInt(0);
+    return walletUsdcWei < usdcVariableDebt ? walletUsdcWei : usdcVariableDebt;
+  };
+
+  // Helper to get target borrow amount in USD from state (respecting LTV slider)
+  const getTargetBorrowAmount = () => {
+    const fallback = totalDeposited * ltv[0] / 100;
+    const raw = borrowAmount ? parseFloat(borrowAmount) : fallback;
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return raw;
+  };
+
+
+  // STEP 2: Deposit only (Aave, lit les soldes réels)
+  const handleDepositOnly = async () => {
+    if (!address) {
+      alert("Connect your wallet first");
+      return;
+    }
+
+    // tokenBalances suit l'ordre tokenAddressesForBalances: [WBTC, WETH]
+    const balances = (tokenBalances || []).map((r) =>
+      r && r.status === "success" ? (r.result as bigint) : BigInt(0)
+    );
+
+    const tokensForDeposit: { symbol: "BTC" | "ETH"; address: `0x${string}`; balance: bigint }[] = [];
+
+    if (balances[0] && balances[0] > BigInt(0)) {
+      tokensForDeposit.push({
+        symbol: "BTC",
+        address: tokenAddressesForBalances[0],
+        balance: balances[0],
+      });
+    }
+    if (balances[1] && balances[1] > BigInt(0)) {
+      tokensForDeposit.push({
+        symbol: "ETH",
+        address: tokenAddressesForBalances[1],
+        balance: balances[1],
+      });
+    }
+
+    if (tokensForDeposit.length === 0) {
+      console.log("No WBTC / WETH balance found to deposit. Run the swaps first.");
+      return;
+    }
+
+    setIsSwapping(true);
+    try {
+      for (const token of tokensForDeposit) {
+        // Use 95% of the on-chain balance to avoid dust/rounding issues
+        const conservativeBalance = (token.balance * BigInt(95)) / BigInt(100);
+        if (conservativeBalance <= BigInt(0)) continue;
+
+        console.log("Depositing to Aave with conservative balance", {
+          symbol: token.symbol,
+          fullBalance: token.balance.toString(),
+          conservativeBalance: conservativeBalance.toString(),
+        });
+
+        // 1) Approve Aave Pool for the conservative amount
+        await approve(token.address, conservativeBalance);
+        // 2) Supply conservative amount
+        await supply(token.address, conservativeBalance);
+      }
+
+      console.log("✅ Deposits submitted! Step 2/2: All detected WBTC / WETH positions have been deposited to Aave.");
+    } catch (error: any) {
+      console.error("Error in deposits:", error);
+    } finally {
+      setIsSwapping(false);
+    }
+  };
+
+  // Show loading state until mounted to prevent hydration mismatch
+  if (!mounted) {
+    return (
+      <section id="dashboard" className="relative py-32 px-6" ref={ref}>
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center">
+            <span className="text-sm font-medium text-bitcoin mb-4 block">
+              DASHBOARD
+            </span>
+            <h2 className="font-display text-4xl md:text-5xl font-bold mb-6">
+              Loading...
+            </h2>
+            <div className="flex justify-center">
+              <Loader2 className="w-8 h-8 animate-spin text-bitcoin" />
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (!isConnected) {
+    return (
+      <section id="dashboard" className="relative py-32 px-6" ref={ref}>
+        <div className="max-w-4xl mx-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={isInView ? { opacity: 1, y: 0 } : {}}
+            transition={{ duration: 0.5 }}
+            className="text-center"
+          >
+            <span className="text-sm font-medium text-bitcoin mb-4 block">
+              DASHBOARD
+            </span>
+            <h2 className="font-display text-4xl md:text-5xl font-bold mb-6">
+              Connect to Get Started
+            </h2>
+            <p className="text-lg text-muted-foreground max-w-xl mx-auto mb-12">
+              Connect your wallet to access the Buy, Borrow, Die dashboard.
+              Start building your crypto-backed financial strategy today.
+            </p>
+
+            <GlassCard className="max-w-md mx-auto p-8">
+              <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-bitcoin/20 to-ethereum/20 flex items-center justify-center mx-auto mb-6">
+                <WalletIcon className="w-10 h-10 text-bitcoin" />
+              </div>
+              <h3 className="font-display font-bold text-xl mb-4 text-center">
+                Welcome to BBDFi
+              </h3>
+              <p className="text-muted-foreground text-sm mb-6 text-center">
+                Connect your wallet to start your Buy, Borrow, Die strategy.
+              </p>
+              <div className="flex justify-center">
+                <Button
+                  onClick={() => {
+                    // Wallet connection handled by header
+                    window.location.hash = "#dashboard";
+                  }}
+                  className="!rounded-xl !py-3"
+                >
+                  Connect Wallet
+                </Button>
+              </div>
+            </GlassCard>
+          </motion.div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section id="dashboard" className="relative py-32 px-6" ref={ref}>
+      <div className="max-w-7xl mx-auto">
+        {/* Section header with wallet info */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.5 }}
+          className="text-center mb-12"
+        >
+          <span className="text-sm font-medium text-bitcoin mb-4 block">
+            DASHBOARD
+          </span>
+          <h2 className="font-display text-4xl md:text-5xl font-bold mb-4">
+            Your <span className="gradient-text">BBD</span> Strategy
+          </h2>
+          
+          {/* Connected wallet info */}
+          <div className="flex items-center justify-center gap-4 mt-6">
+            <div className="glass rounded-full px-4 py-2 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-bitcoin to-ethereum flex items-center justify-center">
+                {ensAvatar ? (
+                  <img src={ensAvatar} alt={ensName || ""} className="w-8 h-8 rounded-full" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-bitcoin to-ethereum" />
+                )}
+              </div>
+              <div className="text-left">
+                <span className="text-sm font-medium block">
+                  {ensName || shortenAddress(address || "")}
+                </span>
+                <button 
+                  onClick={copyAddress}
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+                >
+                  {shortenAddress(address || "")}
+                  {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                </button>
+              </div>
+            </div>
+            <a
+              href={`https://${chainId === 421614 ? 'sepolia.' : ''}arbiscan.io/address/${address}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="glass rounded-full p-2 hover:bg-white/10 transition-colors"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          </div>
+        </motion.div>
+
+        {/* Stats Grid */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.5, delay: 0.1 }}
+          className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8"
+        >
+          <StatsCard
+            label="USDC Balance"
+            value={`$${usdcBalanceFormatted}`}
+            icon={<DollarSign className="w-5 h-5 text-usdc" />}
+            subValue="Available to invest"
+          />
+          <StatsCard
+            label="Total Deposited"
+            value={formatCurrency(totalDeposited)}
+            icon={<Shield className="w-5 h-5 text-ethereum" />}
+            subValue="in AAVE V3"
+          />
+          <StatsCard
+            label="Total Borrowed"
+            value={formatCurrency(totalBorrowed)}
+            icon={<Landmark className="w-5 h-5 text-bitcoin" />}
+            subValue="USDC"
+          />
+          <StatsCard
+            label="Available to Borrow"
+            value={formatCurrency(availableToBorrow)}
+            icon={<BarChart3 className="w-5 h-5 text-ethereum" />}
+            subValue="at current LTV"
+          />
+        </motion.div>
+
+        {/* Health Factor */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.5, delay: 0.15 }}
+          className="mb-8"
+        >
+          <GlassCard className="p-6">
+            <HealthFactorGauge value={healthFactor} />
+            {totalBorrowed === 0 && (
+              <p className="text-center text-sm text-muted-foreground mt-4">
+                No active borrows. Deposit crypto and borrow USDC to start your BBD strategy!
+              </p>
+            )}
+          </GlassCard>
+        </motion.div>
+
+        {/* Arc Credit Line Section */}
+        <ArcCreditLineCard />
+
+        {/* Main Dashboard Tabs */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.5, delay: 0.2 }}
+        >
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="space-y-6">
+            <TabsList className="grid grid-cols-3 w-full max-w-md mx-auto">
+              <TabsTrigger value="buy" className="gap-2">
+                <Coins className="w-4 h-4" />
+                Buy
+              </TabsTrigger>
+              <TabsTrigger value="borrow" className="gap-2">
+                <Landmark className="w-4 h-4" />
+                Borrow
+              </TabsTrigger>
+              <TabsTrigger value="portfolio" className="gap-2">
+                <BarChart3 className="w-4 h-4" />
+                Portfolio
+              </TabsTrigger>
+            </TabsList>
+
+            {/* BUY TAB */}
+            <TabsContent value="buy">
+              <div className="space-y-6">
+                {/* Cross-Chain Deposit Section */}
+                <GlassCard>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <ArrowDownUp className="w-5 h-5 text-ethereum" />
+                      Cross-Chain Deposit (LI.FI)
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <p className="text-sm text-muted-foreground">
+                      Deposit from any chain to Arbitrum. LI.FI automatically finds the best route for your assets.
+                    </p>
+                    <CrossChainDepositForm />
+                  </CardContent>
+                </GlassCard>
+
+                <div className="grid lg:grid-cols-2 gap-6">
+                {/* DCA Setup */}
+                <GlassCard>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <RefreshCw className="w-5 h-5 text-bitcoin" />
+                      DCA Strategy
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {/* DCA Status */}
+                    {isDCAActive && (
+                      <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                          </span>
+                          <span className="text-sm text-green-400 font-medium">DCA Active</span>
+                        </div>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setIsDCAActive(false)}
+                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        >
+                          Stop
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Amount Input */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Amount per period (USDC)</label>
+                      <div className="relative">
+                        <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input
+                          type="number"
+                          value={dcaAmount}
+                          onChange={(e) => setDcaAmount(e.target.value)}
+                          className="pl-9"
+                          placeholder="500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Frequency */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Frequency</label>
+                      <div className="grid grid-cols-4 gap-2">
+                        {dcaFrequencies.map((freq) => (
+                          <button
+                            key={freq.value}
+                            onClick={() => setDcaFrequency(freq.value)}
+                            className={cn(
+                              "px-3 py-2 rounded-lg text-sm font-medium transition-all",
+                              dcaFrequency === freq.value
+                                ? "bg-bitcoin text-white"
+                                : "bg-white/5 hover:bg-white/10"
+                            )}
+                          >
+                            {freq.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Allocation */}
+                    <AssetAllocation
+                      allocations={dcaAllocations}
+                      onAllocationsChange={setDcaAllocations}
+                      prices={prices}
+                      editable={true}
+                      cryptoAssets={cryptoAssets}
+                    />
+
+                    <Button 
+                      variant="gradient" 
+                      className="w-full"
+                      onClick={() => setIsDCAActive(true)}
+                      disabled={isDCAActive || dcaAllocations.reduce((a, b) => a + b, 0) !== 100}
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      {isDCAActive ? "DCA Running" : "Start DCA Strategy"}
+                    </Button>
+                  </CardContent>
+                </GlassCard>
+
+                {/* Quick Deposit */}
+                <GlassCard>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <ArrowDownUp className="w-5 h-5 text-ethereum" />
+                      Quick Deposit
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    <div className="p-4 rounded-xl bg-white/5 space-y-3">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">From</span>
+                        <span className="font-medium">USDC Balance: ${usdcBalanceFormatted}</span>
+                      </div>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          value={depositAmount}
+                          onChange={(e) => setDepositAmount(e.target.value)}
+                          className="text-2xl font-bold h-14 pr-20"
+                          placeholder="0.00"
+                        />
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-usdc flex items-center justify-center text-xs font-bold text-white">
+                            $
+                          </div>
+                          <span className="font-medium">USDC</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {[25, 50, 75, 100].map((pct) => (
+                          <button
+                            key={pct}
+                            onClick={() => setDepositAmount(String((Number(usdcBalanceFormatted) * pct / 100).toFixed(2)))}
+                            className="flex-1 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors"
+                          >
+                            {pct}%
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-center">
+                      <div className="p-2 rounded-full bg-white/5">
+                        <ArrowDownUp className="w-4 h-4" />
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-white/5">
+                      <AssetAllocation
+                        allocations={quickDepositAllocations}
+                        onAllocationsChange={setQuickDepositAllocations}
+                        prices={prices}
+                        editable={true}
+                        depositAmount={depositAmount}
+                        cryptoAssets={cryptoAssets}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-1 gap-3">
+                      <Button 
+                        variant="outline" 
+                        className="w-full" 
+                        disabled={isSwapping || !address}
+                        onClick={handleDepositOnly}
+                      >
+                        {isSwapping ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Depositing...
+                          </>
+                        ) : (
+                          <>
+                            <Landmark className="w-4 h-4" />
+                            2. Deposit to Aave
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </GlassCard>
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* BORROW TAB */}
+            <TabsContent value="borrow">
+              <div className="grid lg:grid-cols-2 gap-6">
+                {/* Borrow Form */}
+                <GlassCard>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Landmark className="w-5 h-5 text-usdc" />
+                      Borrow USDC
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {totalDeposited === 0 ? (
+                      <div className="text-center py-8">
+                        <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-4">
+                          <Shield className="w-8 h-8 text-muted-foreground" />
+                        </div>
+                        <h4 className="font-display font-semibold mb-2">No Collateral</h4>
+                        <p className="text-sm text-muted-foreground mb-4">
+                          Deposit crypto first to use as collateral for borrowing USDC.
+                        </p>
+                        <Button
+                          variant="outline"
+                          onClick={() => setActiveTab("buy")}
+                        >
+                          Go to Deposit
+                        </Button>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Collateral Info */}
+                        <div className="p-4 rounded-xl bg-gradient-to-br from-ethereum/10 to-bitcoin/10 border border-white/10">
+                          <div className="flex items-center justify-between mb-4">
+                            <span className="text-sm text-muted-foreground">Your Collateral</span>
+                            <span className="font-display font-bold">{formatCurrency(totalDeposited)}</span>
+                          </div>
+                          <div className="space-y-2">
+                            {cryptoAssets.map((asset) => (
+                              <div key={asset.symbol} className="flex items-center justify-between text-sm">
+                                <div className="flex items-center gap-2">
+                                  <div
+                                    className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold"
+                                    style={{ backgroundColor: `${asset.color}20`, color: asset.color }}
+                                  >
+                                    {asset.icon}
+                                  </div>
+                                  <span>{asset.symbol}</span>
+                                </div>
+                                <span>${(totalDeposited * asset.allocation / 100).toFixed(2)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* LTV Slider */}
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium">Loan-to-Value Ratio</label>
+                            <span className="font-display font-bold text-lg">{ltv[0]}%</span>
+                          </div>
+                          <Slider
+                            value={ltv}
+                            max={80}
+                            min={10}
+                            step={5}
+                            onValueChange={setLtv}
+                            className="[&_[role=slider]]:bg-white"
+                          />
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>Conservative (10%)</span>
+                            <span>Max (80%)</span>
+                          </div>
+                          <div className={cn(
+                            "flex items-center gap-2 p-3 rounded-lg text-sm",
+                            ltv[0] <= 50 ? "bg-green-500/10 text-green-400" :
+                            ltv[0] <= 70 ? "bg-yellow-500/10 text-yellow-400" :
+                            "bg-red-500/10 text-red-400"
+                          )}>
+                            {ltv[0] <= 50 ? <CheckCircle2 className="w-4 h-4" /> :
+                             ltv[0] <= 70 ? <Info className="w-4 h-4" /> :
+                             <AlertTriangle className="w-4 h-4" />}
+                            {ltv[0] <= 50 ? "Safe zone - Low liquidation risk" :
+                             ltv[0] <= 70 ? "Moderate risk - Monitor regularly" :
+                             "High risk - Close to liquidation threshold"}
+                          </div>
+                        </div>
+
+                        {/* Borrow Amount */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium">Borrow Amount</label>
+                            <span className="text-sm text-muted-foreground">
+                              Max: {formatCurrency(totalDeposited * 0.8)}
+                            </span>
+                          </div>
+                          <div className="relative">
+                            <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                            <Input
+                              type="number"
+                              value={borrowAmount || String((totalDeposited * ltv[0] / 100).toFixed(2))}
+                              onChange={(e) => setBorrowAmount(e.target.value)}
+                              className="pl-9 text-xl font-bold"
+                              placeholder="0.00"
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                              USDC
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Summary */}
+                        <div className="space-y-2 p-4 rounded-xl bg-white/5">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Interest Rate (APY)</span>
+                            <span className="text-green-400">4.2%</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Monthly Cost</span>
+                            <span>~${(getTargetBorrowAmount() * 0.042 / 12).toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">New Health Factor</span>
+                            <span className={cn(
+                              "font-medium",
+                              calculateHealthFactor(totalDeposited, totalBorrowed + getTargetBorrowAmount()) > 1.5 ? "text-green-400" : "text-yellow-400"
+                            )}>
+                              {calculateHealthFactor(totalDeposited, totalBorrowed + getTargetBorrowAmount()).toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <Button
+                          variant="gradient"
+                          className="w-full"
+                          disabled={
+                            isBorrowPending ||
+                            isBorrowConfirming ||
+                            getTargetBorrowAmount() <= 0 ||
+                            getTargetBorrowAmount() > totalDeposited * 0.8
+                          }
+                          onClick={async () => {
+                            if (!address) {
+                              console.log("Connect your wallet first");
+                              return;
+                            }
+                            if (totalDeposited === 0) {
+                              console.log("You need collateral deposited in Aave before borrowing.");
+                              return;
+                            }
+                            const amountUsd = getTargetBorrowAmount();
+                            const maxBorrowUsd = totalDeposited * 0.8;
+                            if (amountUsd > maxBorrowUsd) {
+                              console.log(`Borrow amount exceeds safe maximum (${maxBorrowUsd.toFixed(2)} USDC).`);
+                              return;
+                            }
+                            try {
+                              const amountWei = BigInt(Math.round(amountUsd * 1_000_000)); // USDC 6 decimals
+                              await borrow(contracts.USDC as `0x${string}`, amountWei);
+                              console.log(`✅ Borrowed ${amountUsd.toFixed(2)} USDC from Aave.`);
+                            } catch (err: any) {
+                              console.error("Error borrowing USDC:", err);
+                            }
+                          }}
+                        >
+                          {isBorrowPending || isBorrowConfirming ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Borrowing...
+                            </>
+                          ) : (
+                            <>
+                              <Landmark className="w-4 h-4" />
+                              Borrow USDC
+                            </>
+                          )}
+                        </Button>
+                      </>
+                    )}
+                  </CardContent>
+                </GlassCard>
+
+                {/* Active Position */}
+                <GlassCard>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Clock className="w-5 h-5 text-ethereum" />
+                      Active Position
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {totalBorrowed === 0 ? (
+                      <div className="text-center py-8">
+                        <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-4">
+                          <Landmark className="w-8 h-8 text-muted-foreground" />
+                        </div>
+                        <h4 className="font-display font-semibold mb-2">No Active Loans</h4>
+                        <p className="text-sm text-muted-foreground">
+                          Borrow USDC against your crypto to start living the BBD lifestyle!
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Current Loan */}
+                        <div className="p-4 rounded-xl bg-gradient-to-br from-usdc/10 to-ethereum/10 border border-white/10">
+                          <div className="flex items-center justify-between mb-4">
+                            <span className="text-sm text-muted-foreground">Currently Borrowed</span>
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full bg-usdc flex items-center justify-center text-xs font-bold text-white">
+                                $
+                              </div>
+                              <span className="font-display font-bold text-2xl">{formatNumber(totalBorrowed)}</span>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-4 pt-4 border-t border-white/10">
+                            <div>
+                              <p className="text-xs text-muted-foreground mb-1">Interest Accrued</p>
+                              <p className="font-medium">${(totalBorrowed * 0.042 / 12).toFixed(2)}/mo</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground mb-1">APY</p>
+                              <p className="font-medium text-green-400">4.2%</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Liquidation Info */}
+                        <div className="p-4 rounded-xl bg-white/5">
+                          <div className="flex items-center gap-2 mb-3">
+                            <AlertTriangle className="w-4 h-4 text-yellow-500" />
+                            <span className="text-sm font-medium">Liquidation Thresholds</span>
+                          </div>
+                          <div className="space-y-2">
+                            {cryptoAssets.map((asset) => {
+                              const price = prices[asset.symbol as keyof typeof prices] || 1;
+                              return (
+                                <div key={asset.symbol} className="flex items-center justify-between text-sm">
+                                  <div className="flex items-center gap-2">
+                                    <div
+                                      className="w-5 h-5 rounded flex items-center justify-center text-xs font-bold"
+                                      style={{ backgroundColor: `${asset.color}20`, color: asset.color }}
+                                    >
+                                      {asset.icon}
+                                    </div>
+                                    <span>{asset.symbol}</span>
+                                  </div>
+                                  <span className="text-muted-foreground">
+                                    ${(price * 0.65).toFixed(0)}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Quick Actions */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            disabled={
+                              isRepayPending ||
+                              isRepayConfirming ||
+                              isApprovePending ||
+                              isApproveConfirming ||
+                              waitingForApproveConfirmation ||
+                              isRepaying ||
+                              getRepayAmountWei() <= BigInt(0)
+                            }
+                            onClick={async () => {
+                              if (!address) {
+                                console.log("Connect your wallet first");
+                                return;
+                              }
+
+                              const repayAmountWei = getRepayAmountWei();
+                              if (repayAmountWei <= BigInt(0)) {
+                                console.log("No repayable USDC amount found (check your wallet balance and Aave debt).");
+                                return;
+                              }
+
+                              try {
+                                // Step 1: Approve if needed
+                                if (!usdcAllowance || usdcAllowance < repayAmountWei) {
+                                  if (waitingForApproveConfirmation || isApprovePending || isApproveConfirming) {
+                                    console.log("Please wait for the previous approval to be confirmed.");
+                                    return;
+                                  }
+                                  
+                                  const approveAmount = repayAmountWei * BigInt(2);
+                                  setWaitingForApproveConfirmation(true);
+                                  await approve(contracts.USDC as `0x${string}`, approveAmount);
+                                  console.log("✅ Approval submitted. Please wait for confirmation, then click Repay again.");
+                                  return;
+                                }
+
+                                // Step 2: Repay
+                                if (waitingForApproveConfirmation || isApprovePending || isApproveConfirming || isRepaying) {
+                                  console.log("Please wait for the approval to be confirmed before repaying.");
+                                  return;
+                                }
+
+                                setIsRepaying(true);
+
+                                try {
+                                  const walletUsdc = usdcBalance ? Number(usdcBalance.formatted) : 0;
+                                  const walletUsdcWei = walletUsdc > 0 ? BigInt(Math.floor(walletUsdc * 1_000_000)) : BigInt(0);
+                                  const finalRepayAmount = walletUsdcWei >= usdcVariableDebt 
+                                    ? usdcVariableDebt 
+                                    : walletUsdcWei;
+                                  
+                                  if (finalRepayAmount <= BigInt(0)) {
+                                    console.log("No repayable amount found.");
+                                    setIsRepaying(false);
+                                    return;
+                                  }
+
+                                  await repay(contracts.USDC as `0x${string}`, finalRepayAmount);
+                                  
+                                  setTimeout(async () => {
+                                    await refetchAaveAccount();
+                                  }, 1000);
+                                  
+                                  console.log("✅ Repay transaction submitted.");
+                                } catch (err: any) {
+                                  setIsRepaying(false);
+                                  throw err;
+                                } finally {
+                                  setTimeout(() => setIsRepaying(false), 2000);
+                                }
+                              } catch (err: any) {
+                                console.error("Error repaying USDC:", err);
+                              }
+                            }}
+                          >
+                            {isRepayPending || isRepayConfirming ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                Repaying...
+                              </>
+                            ) : isApprovePending || isApproveConfirming || waitingForApproveConfirmation ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                {waitingForApproveConfirmation && !isApprovePending && !isApproveConfirming
+                                  ? "Waiting for approval..."
+                                  : "Approving..."}
+                              </>
+                            ) : (
+                              <>
+                                <ArrowUpRight className="w-4 h-4" />
+                                {!usdcAllowance || usdcAllowance < getRepayAmountWei()
+                                  ? "Approve USDC"
+                                  : "Repay"}
+                              </>
+                            )}
+                          </Button>
+
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            onClick={() => setActiveTab("buy")}
+                          >
+                            <TrendingUp className="w-4 h-4" />
+                            Add Collateral
+                          </Button>
+                        </div>
+                      </>
+                    )}
+
+                    {/* AAVE Link */}
+                    <a
+                      href={`https://app.aave.com/?marketName=${chainId === 421614 ? 'proto_arbitrum_sepolia_v3' : 'proto_arbitrum_v3'}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-colors text-sm text-muted-foreground"
+                    >
+                      Manage on AAVE
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  </CardContent>
+                </GlassCard>
+              </div>
+            </TabsContent>
+
+            {/* PORTFOLIO TAB */}
+            <TabsContent value="portfolio">
+              <div className="grid lg:grid-cols-3 gap-6">
+                {/* Holdings */}
+                <GlassCard className="lg:col-span-2">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <BarChart3 className="w-5 h-5 text-bitcoin" />
+                      Holdings
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {(() => {
+                      // Wallet balances: USDC, WBTC, WETH
+                      const usdcWallet = usdcBalance ? Number(usdcBalance.formatted) : 0;
+                      const wbtcBalance =
+                        tokenBalances && tokenBalances[0] && tokenBalances[0].status === "success"
+                          ? (tokenBalances[0].result as bigint)
+                          : BigInt(0);
+                      const wethBalance =
+                        tokenBalances && tokenBalances[1] && tokenBalances[1].status === "success"
+                          ? (tokenBalances[1].result as bigint)
+                          : BigInt(0);
+
+                      const hasAnyHolding =
+                        usdcWallet > 0 || wbtcBalance > BigInt(0) || wethBalance > BigInt(0) || totalDeposited > 0;
+
+                      if (!hasAnyHolding) {
+                        return (
+                          <div className="text-center py-8">
+                            <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-4">
+                              <BarChart3 className="w-8 h-8 text-muted-foreground" />
+                            </div>
+                            <h4 className="font-display font-semibold mb-2">No Holdings Yet</h4>
+                            <p className="text-sm text-muted-foreground mb-4">
+                              Swap USDC to WBTC / WETH or deposit to Aave to see your portfolio here.
+                            </p>
+                          </div>
+                        );
+                      }
+
+                      const rows: Array<{
+                        key: string;
+                        name: string;
+                        symbol: string;
+                        icon: string;
+                        color: string;
+                        amount: number;
+                        value: number;
+                      }> = [];
+
+                      // USDC (wallet)
+                      if (usdcWallet > 0) {
+                        rows.push({
+                          key: "USDC",
+                          name: "USDC",
+                          symbol: "USDC",
+                          icon: "$",
+                          color: "#2775CA",
+                          amount: usdcWallet,
+                          value: usdcWallet,
+                        });
+                      }
+
+                      // WBTC (wallet)
+                      if (wbtcBalance > BigInt(0)) {
+                        const btcAmount = Number(formatUnits(wbtcBalance, 8));
+                        const btcPriceNow = prices.BTC || 0;
+                        rows.push({
+                          key: "BTC",
+                          name: "Wrapped Bitcoin (WBTC)",
+                          symbol: "BTC",
+                          icon: "₿",
+                          color: "#F7931A",
+                          amount: btcAmount,
+                          value: btcAmount * btcPriceNow,
+                        });
+                      }
+
+                      // WETH (wallet)
+                      if (wethBalance > BigInt(0)) {
+                        const ethAmount = Number(formatUnits(wethBalance, 18));
+                        const ethPriceNow = prices.ETH || 0;
+                        rows.push({
+                          key: "ETH",
+                          name: "Wrapped Ether (WETH)",
+                          symbol: "ETH",
+                          icon: "Ξ",
+                          color: "#627EEA",
+                          amount: ethAmount,
+                          value: ethAmount * ethPriceNow,
+                        });
+                      }
+
+                      // Aave total deposited as a synthetic "Aave Collateral" row
+                      if (totalDeposited > 0) {
+                        rows.push({
+                          key: "AAVE_COLLATERAL",
+                          name: "Aave Collateral (all markets)",
+                          symbol: "AAVE V3",
+                          icon: "ⓐ",
+                          color: "#B6509E",
+                          amount: totalDeposited,
+                          value: totalDeposited,
+                        });
+                      }
+
+                      return (
+                        <div className="space-y-4">
+                          {rows.map((row) => (
+                            <div
+                              key={row.key}
+                              className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
+                            >
+                              <div className="flex items-center gap-4">
+                                <div
+                                  className="w-12 h-12 rounded-xl flex items-center justify-center text-xl font-bold"
+                                  style={{ backgroundColor: `${row.color}20`, color: row.color }}
+                                >
+                                  {row.icon}
+                                </div>
+                                <div>
+                                  <h4 className="font-display font-semibold">{row.name}</h4>
+                                  <p className="text-sm text-muted-foreground">
+                                    {row.amount.toFixed(6)} {row.symbol}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <p className="font-display font-semibold">
+                                  {formatCurrency(row.value)}
+                                </p>
+                                {(row.symbol === "BTC" || row.symbol === "ETH") && (
+                                  <p className="text-sm text-muted-foreground">
+                                    @ $
+                                    {formatNumber(
+                                      row.symbol === "BTC" ? prices.BTC || 0 : prices.ETH || 0
+                                    )}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </CardContent>
+                </GlassCard>
+
+                {/* Strategy Summary */}
+                <GlassCard>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Settings className="w-5 h-5 text-ethereum" />
+                      Strategy
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="p-3 rounded-lg bg-white/5">
+                      <p className="text-xs text-muted-foreground mb-1">DCA Status</p>
+                      <div className="flex items-center gap-2">
+                        {isDCAActive ? (
+                          <>
+                            <span className="relative flex h-2 w-2">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                            </span>
+                            <span className="font-medium text-green-400">Active</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="relative flex h-2 w-2">
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-muted-foreground" />
+                            </span>
+                            <span className="font-medium text-muted-foreground">Inactive</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-lg bg-white/5">
+                      <p className="text-xs text-muted-foreground mb-1">DCA Amount</p>
+                      <p className="font-medium">${dcaAmount}/{dcaFrequency}</p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-white/5">
+                      <p className="text-xs text-muted-foreground mb-1">Total Deposited</p>
+                      <p className="font-medium">{formatCurrency(totalDeposited)}</p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-white/5">
+                      <p className="text-xs text-muted-foreground mb-1">Total Borrowed</p>
+                      <p className="font-medium">{formatCurrency(totalBorrowed)}</p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-white/5">
+                      <p className="text-xs text-muted-foreground mb-1">Net Position</p>
+                      <p className={cn(
+                        "font-display font-bold text-lg",
+                        totalDeposited - totalBorrowed >= 0 ? "text-green-400" : "text-red-400"
+                      )}>
+                        {formatCurrency(totalDeposited - totalBorrowed)}
+                      </p>
+                    </div>
+                  </CardContent>
+                </GlassCard>
+              </div>
+            </TabsContent>
+          </Tabs>
+        </motion.div>
+      </div>
+    </section>
+  );
+}
