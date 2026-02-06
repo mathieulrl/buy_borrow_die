@@ -41,14 +41,15 @@ export function useUserAccountData() {
   const { address } = useAccount();
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
 
   const { data, isLoading, refetch } = useReadContract({
-    address: contracts.AAVE_POOL,
+    address: isArbitrumSepolia && 'AAVE_POOL' in contracts ? contracts.AAVE_POOL : undefined,
     abi: AAVE_POOL_ABI,
     functionName: "getUserAccountData",
     args: address ? [address] : undefined,
     query: {
-      enabled: !!address,
+      enabled: !!address && isArbitrumSepolia,
       refetchInterval: 30000, // Refetch every 30 seconds
     },
   });
@@ -70,14 +71,15 @@ export function useUserReserveData(assetAddress: Address) {
   const { address } = useAccount();
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
 
   const { data, isLoading, refetch } = useReadContract({
-    address: contracts.AAVE_POOL_DATA_PROVIDER,
+    address: isArbitrumSepolia && 'AAVE_POOL_DATA_PROVIDER' in contracts ? contracts.AAVE_POOL_DATA_PROVIDER : undefined,
     abi: AAVE_DATA_PROVIDER_ABI,
     functionName: "getUserReserveData",
     args: address ? [assetAddress, address] : undefined,
     query: {
-      enabled: !!address,
+      enabled: !!address && isArbitrumSepolia,
       refetchInterval: 30000,
     },
   });
@@ -108,6 +110,7 @@ export function useSupply() {
   const { address } = useAccount();
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
   const { addTransaction, updateTransactionStatus } = useAppStore();
 
   const { 
@@ -125,6 +128,12 @@ export function useSupply() {
   const supply = useCallback(
     async (assetAddress: Address, amount: bigint) => {
       if (!address) throw new Error("Wallet not connected");
+      if (!isArbitrumSepolia || !('AAVE_POOL' in contracts)) {
+        throw new Error("AAVE is only available on Arbitrum Sepolia");
+      }
+
+      // TypeScript now knows contracts has AAVE_POOL
+      const aavePool = contracts.AAVE_POOL;
 
       // Add pending transaction
       const txId = `supply-${Date.now()}`;
@@ -139,7 +148,7 @@ export function useSupply() {
 
       try {
         await writeContract({
-          address: contracts.AAVE_POOL,
+          address: aavePool,
           abi: AAVE_POOL_ABI,
           functionName: "supply",
           args: [assetAddress, amount, address, 0],
@@ -149,7 +158,7 @@ export function useSupply() {
         throw err;
       }
     },
-    [address, contracts, writeContract, addTransaction, updateTransactionStatus]
+    [address, contracts, writeContract, addTransaction, updateTransactionStatus, isArbitrumSepolia]
   );
 
   // Update transaction status when confirmed
@@ -167,6 +176,7 @@ export function useBorrow() {
   const { address } = useAccount();
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
   const { addTransaction, updateTransactionStatus } = useAppStore();
 
   const { 
@@ -184,6 +194,12 @@ export function useBorrow() {
   const borrow = useCallback(
     async (assetAddress: Address, amount: bigint) => {
       if (!address) throw new Error("Wallet not connected");
+      if (!isArbitrumSepolia || !('AAVE_POOL' in contracts)) {
+        throw new Error("AAVE is only available on Arbitrum Sepolia");
+      }
+
+      // TypeScript now knows contracts has AAVE_POOL
+      const aavePool = contracts.AAVE_POOL;
 
       // Add pending transaction
       const txId = `borrow-${Date.now()}`;
@@ -199,7 +215,7 @@ export function useBorrow() {
       try {
         // Interest rate mode: 2 = variable rate
         await writeContract({
-          address: contracts.AAVE_POOL,
+          address: aavePool,
           abi: AAVE_POOL_ABI,
           functionName: "borrow",
           args: [assetAddress, amount, BigInt(2), 0, address],
@@ -209,7 +225,7 @@ export function useBorrow() {
         throw err;
       }
     },
-    [address, contracts, writeContract, addTransaction, updateTransactionStatus]
+    [address, contracts, writeContract, addTransaction, updateTransactionStatus, isArbitrumSepolia]
   );
 
   return { borrow, isPending, isConfirming, isSuccess, error, reset, hash };
@@ -220,6 +236,7 @@ export function useRepay() {
   const { address } = useAccount();
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
   const { addTransaction, updateTransactionStatus } = useAppStore();
 
   const { 
@@ -237,6 +254,12 @@ export function useRepay() {
   const repay = useCallback(
     async (assetAddress: Address, amount: bigint) => {
       if (!address) throw new Error("Wallet not connected");
+      if (!isArbitrumSepolia || !('AAVE_POOL' in contracts)) {
+        throw new Error("AAVE is only available on Arbitrum Sepolia");
+      }
+
+      // TypeScript now knows contracts has AAVE_POOL
+      const aavePool = contracts.AAVE_POOL;
 
       // Prevent multiple simultaneous repay calls
       if (isPending) {
@@ -257,7 +280,7 @@ export function useRepay() {
       try {
         // Interest rate mode: 2 = variable rate
         await writeContract({
-          address: contracts.AAVE_POOL,
+          address: aavePool,
           abi: AAVE_POOL_ABI,
           functionName: "repay",
           args: [assetAddress, amount, BigInt(2), address],
@@ -267,7 +290,7 @@ export function useRepay() {
         throw err;
       }
     },
-    [address, contracts, writeContract, addTransaction, updateTransactionStatus, isPending]
+    [address, contracts, writeContract, addTransaction, updateTransactionStatus, isPending, isArbitrumSepolia]
   );
 
   return { repay, isPending, isConfirming, isSuccess, error, reset, hash };
@@ -278,6 +301,7 @@ export function useWithdraw() {
   const { address } = useAccount();
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
   const { addTransaction, updateTransactionStatus } = useAppStore();
 
   const { 
@@ -295,6 +319,12 @@ export function useWithdraw() {
   const withdraw = useCallback(
     async (assetAddress: Address, amount: bigint) => {
       if (!address) throw new Error("Wallet not connected");
+      if (!isArbitrumSepolia || !('AAVE_POOL' in contracts)) {
+        throw new Error("AAVE is only available on Arbitrum Sepolia");
+      }
+
+      // TypeScript now knows contracts has AAVE_POOL
+      const aavePool = contracts.AAVE_POOL;
 
       // Add pending transaction
       const txId = `withdraw-${Date.now()}`;
@@ -309,7 +339,7 @@ export function useWithdraw() {
 
       try {
         await writeContract({
-          address: contracts.AAVE_POOL,
+          address: aavePool,
           abi: AAVE_POOL_ABI,
           functionName: "withdraw",
           args: [assetAddress, amount, address],
@@ -319,7 +349,7 @@ export function useWithdraw() {
         throw err;
       }
     },
-    [address, contracts, writeContract, addTransaction, updateTransactionStatus]
+    [address, contracts, writeContract, addTransaction, updateTransactionStatus, isArbitrumSepolia]
   );
 
   return { withdraw, isPending, isConfirming, isSuccess, error, reset, hash };
@@ -329,6 +359,7 @@ export function useWithdraw() {
 export function useApprove() {
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
 
   const { 
     writeContract, 
@@ -344,14 +375,19 @@ export function useApprove() {
 
   const approve = useCallback(
     async (tokenAddress: Address, amount: bigint) => {
+      if (!isArbitrumSepolia || !('AAVE_POOL' in contracts)) {
+        throw new Error("AAVE is only available on Arbitrum Sepolia");
+      }
+      // TypeScript now knows contracts has AAVE_POOL
+      const aavePool = contracts.AAVE_POOL;
       await writeContract({
         address: tokenAddress,
         abi: ERC20_ABI,
         functionName: "approve",
-        args: [contracts.AAVE_POOL, amount],
+        args: [aavePool, amount],
       });
     },
-    [contracts, writeContract]
+    [contracts, writeContract, isArbitrumSepolia]
   );
 
   return { approve, isPending, isConfirming, isSuccess, error, reset, hash };
@@ -391,14 +427,15 @@ export function useAllowance(tokenAddress: Address) {
   const { address } = useAccount();
   const chainId = useChainId();
   const contracts = getContracts(chainId);
+  const isArbitrumSepolia = chainId === 421614;
 
   const { data, isLoading, refetch } = useReadContract({
     address: tokenAddress,
     abi: ERC20_ABI,
     functionName: "allowance",
-    args: address ? [address, contracts.AAVE_POOL] : undefined,
+    args: address && isArbitrumSepolia && 'AAVE_POOL' in contracts ? [address, contracts.AAVE_POOL] : undefined,
     query: {
-      enabled: !!address,
+      enabled: !!address && isArbitrumSepolia,
     },
   });
 

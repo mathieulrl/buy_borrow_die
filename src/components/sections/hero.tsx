@@ -184,14 +184,14 @@ export function HeroSection() {
                 }
               }}
             >
-              <Coins className="w-5 h-5" />
+                <Coins className="w-5 h-5" />
               {isConnected ? "Start Investing" : "Go to Dashboard"}
-              <motion.span
-                animate={{ x: [0, 4, 0] }}
-                transition={{ duration: 1.5, repeat: Infinity }}
-              >
-                →
-              </motion.span>
+                <motion.span
+                  animate={{ x: [0, 4, 0] }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                >
+                  →
+                </motion.span>
             </Button>
           )}
           <Button size="xl" variant="outline" asChild>

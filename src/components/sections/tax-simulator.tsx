@@ -133,13 +133,13 @@ function ResultCard({ result }: { result: TaxCalculationResult }) {
       {result.lombardRelevance !== "low" && (
         <div className="mt-6 space-y-4">
           <div className="p-4 rounded-xl bg-gradient-to-r from-bitcoin/20 to-ethereum/20 border border-bitcoin/30">
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="w-5 h-5 text-bitcoin" />
-              <span className="font-semibold">Lombard Solution Recommended</span>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Our Buy, Borrow, Die strategy can help you access liquidity while deferring capital gains taxes.
-            </p>
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles className="w-5 h-5 text-bitcoin" />
+            <span className="font-semibold">Lombard Solution Recommended</span>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Our Buy, Borrow, Die strategy can help you access liquidity while deferring capital gains taxes.
+          </p>
           </div>
           
           {/* Arc Credit Line Integration */}

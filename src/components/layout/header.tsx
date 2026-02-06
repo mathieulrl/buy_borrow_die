@@ -37,7 +37,7 @@ export function Header() {
   
   const handleSwitchNetwork = (targetChainId: number) => {
     if (currentChainId !== targetChainId) {
-      switchChain({ chainId: targetChainId });
+        switchChain({ chainId: targetChainId });
       setNetworkMenuOpen(false);
     }
   };
@@ -51,7 +51,7 @@ export function Header() {
             <AlertTriangle className="w-4 h-4" />
             <span>Testnet Mode - {networkName}</span>
             {isArcTestnet && (
-              <a 
+            <a 
                 href="https://faucet.testnet.arc.network" 
                 target="_blank" 
                 rel="noopener noreferrer"
@@ -63,12 +63,12 @@ export function Header() {
             {!isArcTestnet && (
               <a 
                 href="https://faucet.quicknode.com/arbitrum/sepolia" 
-                target="_blank" 
-                rel="noopener noreferrer"
+              target="_blank" 
+              rel="noopener noreferrer"
                 className="underline hover:opacity-80"
-              >
-                Get test ETH
-              </a>
+            >
+              Get test ETH
+            </a>
             )}
           </div>
         </div>
